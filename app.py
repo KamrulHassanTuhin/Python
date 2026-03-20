@@ -65,12 +65,38 @@ def sb_get_articles(user_id: str) -> list:
     if not SUPABASE_URL or not SUPABASE_KEY:
         return []
     try:
-        url = f"{SUPABASE_URL}/rest/v1/articles?user_id=eq.{user_id}&order=published_at.desc&limit=50"
+        url = f"{SUPABASE_URL}/rest/v1/articles?user_id=eq.{user_id}&order=published_at.desc&limit=50&select=id,keyword,quality_score,word_count,status,published_at,body"
         headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}
         r = requests.get(url, headers=headers, timeout=10)
         return r.json() if isinstance(r.json(), list) else []
     except Exception:
         return []
+
+
+def sb_save_article(user_id: str, keyword: str, body: str, quality_score: int, word_count: int, status: str = "published") -> bool:
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        return False
+    try:
+        url = f"{SUPABASE_URL}/rest/v1/articles"
+        headers = {
+            "apikey": SUPABASE_KEY,
+            "Authorization": f"Bearer {SUPABASE_KEY}",
+            "Content-Type": "application/json",
+            "Prefer": "return=minimal",
+        }
+        payload = {
+            "user_id": user_id,
+            "keyword": keyword,
+            "body": body,
+            "quality_score": quality_score,
+            "word_count": word_count,
+            "status": status,
+            "published_at": datetime.utcnow().isoformat(),
+        }
+        r = requests.post(url, headers=headers, json=payload, timeout=10)
+        return r.status_code in (200, 201)
+    except Exception:
+        return False
 
 # ─────────────────────────────────────────────────────────────
 # SESSION STATE INIT
@@ -294,7 +320,26 @@ def page_running():
     else:
         quality = result.get("state", {}).get("quality_result", {}).get("total", 0)
         verdict = result.get("state", {}).get("quality_result", {}).get("verdict", "")
-        st.success(f"Pipeline complete! Score: {quality}/110 — {verdict}")
+        markdown_body = result.get("markdown", "")
+        word_count = len(markdown_body.split())
+
+        # Auto-save to Supabase
+        user_id = st.session_state.user.get("id", "local")
+        if user_id != "local" and markdown_body:
+            saved = sb_save_article(
+                user_id=user_id,
+                keyword=params.get("keyword", ""),
+                body=markdown_body,
+                quality_score=quality,
+                word_count=word_count,
+                status=verdict or "published",
+            )
+            if saved:
+                st.success(f"Pipeline complete! Score: {quality}/110 — {verdict} ✓ Saved to database")
+            else:
+                st.success(f"Pipeline complete! Score: {quality}/110 — {verdict}")
+        else:
+            st.success(f"Pipeline complete! Score: {quality}/110 — {verdict}")
         col1, col2 = st.columns(2)
         with col1:
             if st.button("View Article", type="primary", use_container_width=True):
