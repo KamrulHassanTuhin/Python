@@ -6,6 +6,7 @@ from config import ANTHROPIC_API_KEY
 from shared_memory.memory import update_state, get_field, log_agent_completion, get_pipeline_summary
 from tools.json_helper import extract_json
 from prompts.sop_prompts import QUALITY_GATE_SOP
+from datetime import datetime
 
 client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
@@ -34,6 +35,7 @@ def run(article_id: str) -> dict:
     voice_check = get_field(article_id, "voice_check") or {}
     pipeline = get_pipeline_summary(article_id)
 
+    current_year = datetime.now().year
     print(f"[AG·15] Quality gate: '{keyword}'")
 
     # Pre-computed checks (from previous agents — inter-agent handoff)
