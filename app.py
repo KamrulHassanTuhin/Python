@@ -369,32 +369,86 @@ def page_article():
             st.rerun()
 
 
+def _find_local_article_file(keyword: str) -> str:
+    """Search output/articles/ folder for an .md file matching the keyword."""
+    try:
+        _root = os.path.dirname(os.path.abspath(__file__))
+        output_dir = os.path.join(_root, "Content Machine", "output", "articles")
+        if not os.path.isdir(output_dir):
+            return ""
+        slug = keyword.lower().replace(" ", "_")
+        # Look for files that start with the keyword slug
+        for fname in sorted(os.listdir(output_dir), reverse=True):
+            if fname.endswith(".md") and slug in fname:
+                return os.path.join(output_dir, fname)
+        # Fallback: return the most recent .md file
+        md_files = sorted(
+            [os.path.join(output_dir, f) for f in os.listdir(output_dir) if f.endswith(".md")],
+            key=os.path.getmtime, reverse=True
+        )
+        return md_files[0] if md_files else ""
+    except Exception:
+        return ""
+
+
 def page_history():
     st.markdown("## Article History")
 
     user_id = st.session_state.user.get("id", "local")
 
     # Try Supabase first, fall back to local shared_memory
-    articles = sb_get_articles(user_id)
+    supabase_articles = sb_get_articles(user_id)
+    local_articles = []
 
-    if not articles:
-        # Local fallback
+    if not supabase_articles:
         try:
             from shared_memory.memory import _load
             data = _load()
-            articles = [
+            local_articles = [
                 {
                     "keyword": v.get("keyword", k),
                     "quality_score": v.get("quality_result", {}).get("total", 0),
                     "status": v.get("status", ""),
                     "published_at": v.get("published_at", ""),
                     "word_count": len(v.get("draft", "").split()),
+                    "_source": "local",
                 }
                 for k, v in data.items()
                 if isinstance(v, dict) and not k.startswith("_") and "keyword" in v
             ]
         except Exception:
-            articles = []
+            local_articles = []
+
+    articles = supabase_articles if supabase_articles else local_articles
+
+    # Also scan output/articles/ folder for any .md files not in shared_memory
+    try:
+        _root = os.path.dirname(os.path.abspath(__file__))
+        output_dir = os.path.join(_root, "Content Machine", "output", "articles")
+        if os.path.isdir(output_dir):
+            existing_keywords = {a.get("keyword", "").lower() for a in articles}
+            for fname in sorted(os.listdir(output_dir), reverse=True):
+                if not fname.endswith(".md"):
+                    continue
+                # Extract keyword from filename (strip date suffix)
+                base = fname.replace(".md", "")
+                parts = base.rsplit("_", 1)
+                kw = parts[0].replace("_", " ") if len(parts) == 2 and parts[1].isdigit() else base.replace("_", " ")
+                if kw.lower() not in existing_keywords:
+                    fpath = os.path.join(output_dir, fname)
+                    mtime = datetime.fromtimestamp(os.path.getmtime(fpath)).strftime("%Y-%m-%d")
+                    articles.append({
+                        "keyword": kw,
+                        "quality_score": 0,
+                        "status": "saved",
+                        "published_at": mtime,
+                        "word_count": 0,
+                        "_source": "file",
+                        "_file": fpath,
+                    })
+                    existing_keywords.add(kw.lower())
+    except Exception:
+        pass
 
     if not articles:
         st.info("No articles yet. Write your first article!")
@@ -403,12 +457,41 @@ def page_history():
             st.rerun()
         return
 
-    # Table
-    st.dataframe(
-        articles,
-        column_order=["keyword", "quality_score", "word_count", "status", "published_at"],
-        use_container_width=True,
-    )
+    st.markdown(f"**{len(articles)} article(s)** — click View to read any article")
+    st.divider()
+
+    for i, art in enumerate(articles):
+        col1, col2, col3, col4, col5 = st.columns([4, 1, 1, 2, 1])
+        with col1:
+            st.markdown(f"**{art.get('keyword', '—')}**")
+        with col2:
+            score = art.get("quality_score", 0)
+            st.markdown(f"Score: **{score}**")
+        with col3:
+            wc = art.get("word_count", 0)
+            st.markdown(f"{wc:,} words" if wc else "—")
+        with col4:
+            st.caption(art.get("status", "") or art.get("published_at", "") or "—")
+        with col5:
+            if st.button("View", key=f"view_{i}", type="primary"):
+                # Load content from file or Supabase body
+                content = art.get("body", "") or art.get("markdown", "")
+                if not content:
+                    # Try to find local file
+                    fpath = art.get("_file", "") or _find_local_article_file(art.get("keyword", ""))
+                    if fpath and os.path.exists(fpath):
+                        with open(fpath, encoding="utf-8") as f:
+                            content = f.read()
+                st.session_state.last_article = {
+                    "markdown": content or "_Article content not found. The file may have been deleted._",
+                    "state": {
+                        "keyword": art.get("keyword", ""),
+                        "quality_result": {"total": art.get("quality_score", 0), "verdict": art.get("status", "")},
+                    },
+                }
+                st.session_state.page = "article"
+                st.rerun()
+        st.divider()
 
     if st.button("Write New Article", type="primary"):
         st.session_state.page = "dashboard"
